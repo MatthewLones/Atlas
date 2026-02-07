@@ -4,6 +4,7 @@ import LocationCard from './components/LocationCard';
 import GlobeControls from './components/GlobeControls';
 import VersionBadge from './components/VersionBadge';
 import TimeWheelSelector from './components/TimeWheelSelector';
+import TravelTo from './components/TravelTo';
 import Starfield from './components/Starfield';
 import LandingWarp from './components/landing/LandingWarp';
 import { useAppStore } from './store';
@@ -43,6 +44,7 @@ function App() {
               <VersionBadge />
               <GlobeControls />
               <TimeWheelSelector />
+              <TravelTo />
               <LocationCard />
             </>
           )}
