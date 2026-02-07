@@ -6,6 +6,44 @@ Each entry includes what changed, why it was changed, and which files were affec
 
 ---
 
+## [Session 10] - 2026-02-07 17:15
+
+### Fixed
+- **Enter key not triggering hyperspace warp** — Two issues: (1) keyboard listeners used bubbling phase, but globe.gl's Three.js OrbitControls calls `stopPropagation()` on keyboard events, preventing them from reaching `window`. Fixed by switching to capture phase (`true`). (2) The `release()` function had a 300ms hold threshold from the original CodePen — a quick tap silently aborted the jump. Removed the threshold so any Enter press+release triggers the warp.
+  - `frontend/src/App.tsx`
+  - `frontend/src/components/HyperspaceCanvas.tsx`
+
+---
+
+## [Session 9] - 2026-02-07 17:00
+
+### Added
+- **HyperspaceCanvas radial starfield + warp component** — Ported the vanilla JS JumpToHyperspace CodePen animation into a React + TypeScript component. Stars radiate outward from screen center and grow as they travel. Three visual states: idle (calm radial drift), initiating (hold Enter — star tails freeze, lines stretch), jumping (release Enter — velocity spikes, blue warp tunnel). Uses a custom rAF-based tween system instead of GreenSock TweenMax to avoid adding a heavy dependency. Exposes imperative API via forwardRef: `initiate()`, `release()`, `reset()`. Jump duration set to 5 seconds per spec.
+  - `frontend/src/components/HyperspaceCanvas.tsx`
+- **Globe fade-out CSS class** — Added `.globe-fade-out` with 200ms opacity transition for smooth globe exit during hyperspace jump
+  - `frontend/src/index.css`
+- **Hold-Enter keyboard handling for hyperspace** — Global keydown/keyup listeners (active only during globe phase, skipped when typing in inputs) trigger the initiate-on-hold / jump-on-release flow, with a local `warpState` to manage globe visibility and UI control hiding during warp
+  - `frontend/src/App.tsx`
+
+### Changed
+- **Replaced tsParticles Starfield with HyperspaceCanvas behind globe** — The tsParticles-based `Starfield.tsx` was removed and replaced with the new canvas-based `HyperspaceCanvas` that renders the radial star animation behind the globe. tsParticles remains only in the landing page (`LandingWarp.tsx`).
+  - `frontend/src/App.tsx`
+- **App phase management expanded** — Added `warpState` local state (`idle` | `initiating` | `jumping`) to control globe fade-out, UI control visibility during warp, and transition to `loading` phase when jump completes. HyperspaceCanvas also renders during `loading` phase (idle starfield, no globe).
+  - `frontend/src/App.tsx`
+
+### Removed
+- **Starfield.tsx (tsParticles globe background)** — No longer needed; replaced by the canvas-based HyperspaceCanvas for the globe background
+  - `frontend/src/components/Starfield.tsx`
+
+### Notes
+- The original CodePen animation used TweenMax for smooth value tweening; replaced with a lightweight linear interpolation driven by requestAnimationFrame
+- Template literal backticks were missing from the provided code's `rgba()` calls — fixed during port
+- lodash debounce for resize replaced with native setTimeout debounce
+- Canvas uses `pointer-events: none` so globe interaction passes through
+- Landing page starfield (LandingWarp) is unaffected — still uses tsParticles independently
+
+---
+
 ## [Session 8] - 2026-02-07 16:45
 
 ### Changed
