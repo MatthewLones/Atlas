@@ -16,6 +16,7 @@ import asyncio
 import base64
 import json
 import logging
+import re
 import time
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -38,11 +39,32 @@ VAD_MIN_HORIZON_S = 2.0
 # After VAD says "user stopped", wait this long for STT pipeline to flush
 # remaining words before firing the turn. Prevents split sentences.
 TURN_DEBOUNCE_S = 0.5
+# After a barge-in interrupt, the user is typically still mid-sentence.
+# STT fragments arrive in bursts (mic picks up tail of TTS + user speech).
+# Use a longer debounce to let the full sentence arrive before firing.
+TURN_DEBOUNCE_AFTER_INTERRUPT_S = 1.5
+# How long after an interrupt the extended debounce stays active.
+INTERRUPT_DEBOUNCE_WINDOW_S = 3.0
 
 
 def _ts() -> str:
     """Compact timestamp for logging (seconds.millis since epoch)."""
     return f"{time.time():.3f}"
+
+
+def _sanitize_for_tts(text: str) -> str:
+    """Clean Gemini text for natural TTS readability.
+
+    Strips markdown formatting, collapses whitespace, and replaces
+    characters that TTS engines read awkwardly or skip entirely.
+    """
+    text = text.replace("\n", " ")
+    text = text.replace("...", ", ")
+    text = re.sub(r"\*+", "", text)      # bold/italic asterisks
+    text = re.sub(r"#+\s*", "", text)    # markdown headers
+    text = re.sub(r"`+", "", text)       # code backticks
+    text = re.sub(r"\s+", " ", text)     # collapse whitespace
+    return text
 
 
 async def _send_json(ws: WebSocket, msg: dict, closed: asyncio.Event) -> None:
@@ -161,6 +183,10 @@ async def _process_gemini_response(
     print(f"[{_ts()}][GEMINI] User text: \"{user_text}\"")
     print(f"[{_ts()}][GEMINI] History length: {len(gemini.conversation_history)} entries")
 
+    # Notify frontend which response is now active — frontend uses this to
+    # drop stale audio from previous (cancelled) responses still in-flight.
+    await _send_json(ws, {"type": "response_start", "responseId": response_id}, closed)
+
     try:
         # Try to create TTS stream with retry for concurrency limits.
         # Gradium has a 2-session limit; closed sessions take a moment to free.
@@ -191,7 +217,7 @@ async def _process_gemini_response(
                     encoded = base64.b64encode(audio_chunk).decode("ascii")
                     if tts_chunk_count <= 3 or tts_chunk_count % 20 == 0:
                         print(f"[{_ts()}][TTS→FE] Audio chunk #{tts_chunk_count}: {len(audio_chunk)} bytes")
-                    await _send_json(ws, {"type": "audio", "data": encoded}, closed)
+                    await _send_json(ws, {"type": "audio", "data": encoded, "responseId": response_id}, closed)
                 print(f"[{_ts()}][TTS] Audio stream ended. Total chunks: {tts_chunk_count}")
 
             tts_recv_task = asyncio.create_task(forward_tts_audio())
@@ -213,9 +239,11 @@ async def _process_gemini_response(
                     full_response_text += text_piece
                     gemini_chunk_count += 1
                     print(f"[{_ts()}][GEMINI] Chunk #{gemini_chunk_count}: \"{text_piece}\"")
-                    await _send_json(ws, {"type": "guide_text", "text": text_piece}, closed)
+                    await _send_json(ws, {"type": "guide_text", "text": text_piece, "responseId": response_id}, closed)
                     if tts_stream:
-                        await tts_stream.send_text(text_piece)
+                        tts_text = _sanitize_for_tts(text_piece)
+                        if tts_text.strip():
+                            await tts_stream.send_text(tts_text)
 
                 elif chunk["type"] == "function_call":
                     print(f"[{_ts()}][GEMINI] Function call: {chunk['name']}")
@@ -255,6 +283,13 @@ async def _process_gemini_response(
     finally:
         if tts_stream:
             try:
+                # Per Gradium best practices: send end_of_stream before closing
+                # so the server can clean up the session faster. We don't await
+                # remaining audio — just signal and close immediately.
+                await tts_stream.send_flush()
+            except Exception:
+                pass
+            try:
                 await tts_stream.close()
                 print(f"[{_ts()}][TTS] Stream closed for {response_id}")
             except Exception:
@@ -277,6 +312,7 @@ async def voice_ws(websocket: WebSocket):
     current_response: asyncio.Task | None = None
     ws_closed = asyncio.Event()  # Prevents sending on a closed WebSocket
     turn_count = 0
+    last_interrupt_at = 0.0  # Shared: set by interrupt handler, read by STT task
 
     try:
         print(f"[{_ts()}][VOICE] Creating STT stream...")
@@ -285,7 +321,7 @@ async def voice_ws(websocket: WebSocket):
 
         # Task: receive STT messages (transcripts + VAD)
         async def receive_stt():
-            nonlocal transcript_buffer, current_response, turn_count
+            nonlocal transcript_buffer, current_response, turn_count, last_interrupt_at
             msg_count = 0
             turn_ready = False
             last_stt_word_at = 0.0
@@ -353,16 +389,25 @@ async def voice_ws(websocket: WebSocket):
                 # Fire turn only after VAD indicates silence AND STT has settled
                 # (no new words for TURN_DEBOUNCE_S). This prevents splitting
                 # sentences when STT delivers trailing words after VAD fires.
+                # After a barge-in interrupt, use a longer debounce — the user
+                # is likely still mid-sentence and STT fragments arrive in bursts.
+                since_interrupt = time.time() - last_interrupt_at
+                debounce = (
+                    TURN_DEBOUNCE_AFTER_INTERRUPT_S
+                    if since_interrupt < INTERRUPT_DEBOUNCE_WINDOW_S
+                    else TURN_DEBOUNCE_S
+                )
                 if (turn_ready
                         and transcript_buffer.strip()
                         and last_stt_word_at > 0
-                        and (time.time() - last_stt_word_at) > TURN_DEBOUNCE_S):
+                        and (time.time() - last_stt_word_at) > debounce):
                     turn_count += 1
                     user_text = transcript_buffer.strip()
                     transcript_buffer = ""
                     turn_ready = False
                     last_stt_word_at = 0.0
-                    print(f"[{_ts()}][VOICE] ===== TURN #{turn_count} FIRED (debounced) =====")
+                    debounce_type = "post-interrupt" if since_interrupt < INTERRUPT_DEBOUNCE_WINDOW_S else "normal"
+                    print(f"[{_ts()}][VOICE] ===== TURN #{turn_count} FIRED ({debounce_type} debounce={debounce}s) =====")
                     print(f"[{_ts()}][VOICE] User said: \"{user_text}\"")
 
                     # Cancel any in-progress response and wait for TTS cleanup
@@ -419,6 +464,7 @@ async def voice_ws(websocket: WebSocket):
                 # Frontend detected mic activity while guide was speaking.
                 # Cancel the current response immediately.
                 interrupt_count += 1
+                last_interrupt_at = time.time()
                 is_active = current_response is not None and not current_response.done() if current_response else False
                 print(f"[{_ts()}][FE→BE] INTERRUPT #{interrupt_count} from frontend | response_active={is_active}")
                 if current_response and not current_response.done():

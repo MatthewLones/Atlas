@@ -17,16 +17,35 @@ Each entry includes what changed, why it was changed, and which files were affec
 
 ---
 
+## [Session 10] - 2026-02-07
+
+### Fixed
+- **Gemini text formatting breaking TTS readability** — Gemini occasionally output text with newlines, ellipsis (`...`), and markdown formatting (asterisks, headers, backticks). TTS engines would skip lines or read formatting characters awkwardly. Two-part fix: (1) Added explicit "CRITICAL output rules" to the Gemini system prompt instructing plain spoken prose only — no markdown, no line breaks, no ellipsis, no special characters. (2) Added `_sanitize_for_tts()` function as a safety net that strips any formatting that slips through before text reaches TTS (collapses whitespace, removes markdown, replaces `...` with comma).
+  - `backend/services/gemini_guide.py` — Added TTS output rules to `GUIDE_SYSTEM_PROMPT`
+  - `backend/routers/voice.py` — Added `_sanitize_for_tts()` function, applied to text before `tts_stream.send_text()`
+
+- **Sentence splitting under heavy barge-in** — When the user interrupted and spoke, their sentence was split into 2-3 separate turns (e.g. "No, no, you can tell me about Germany. Sorry, I interrupted you there before" became three turns). Root cause: after an interrupt, STT fragments arrive in bursts as the mic picks up both the tail of TTS audio and the user's actual speech. The standard 0.5s debounce was too short — fragments would pause just long enough to fire a premature turn. Fix: after a barge-in interrupt, use a longer debounce window (1.5s instead of 0.5s) for 3 seconds, giving the user time to finish their thought before a turn fires.
+  - `backend/routers/voice.py` — Added `TURN_DEBOUNCE_AFTER_INTERRUPT_S = 1.5`, `INTERRUPT_DEBOUNCE_WINDOW_S = 3.0`, `last_interrupt_at` shared variable. Interrupt handler records timestamp. Debounced turn firing selects debounce duration based on time since last interrupt. Logs show which debounce mode was used.
+
+---
+
 ## [Session 9] - 2026-02-07
 
 ### Added
 - **Gemini integration analysis doc** — Created `docs/GEMINI_INTEGRATION.md` documenting the full voice pipeline flow, Gemini conversation history mechanics, function calling protocol, all 4 tool call definitions, and session state architecture. Written as reference for both team members.
   - `docs/GEMINI_INTEGRATION.md` — New file
 
+- **Response isolation with responseId** — Added `responseId` tagging to `audio` and `guide_text` WebSocket messages. Backend sends `response_start` before each new response. Frontend tracks `activeResponseId` and drops audio/text from stale (cancelled) responses that are still in-flight in the WebSocket pipe. This prevents jumbled audio when rapidly interrupting — old audio chunks arriving after an interrupt are silently dropped instead of being played.
+  - `backend/routers/voice.py` — Sends `{type: "response_start", responseId}` before each response. Tags `audio` and `guide_text` messages with `responseId`.
+  - `frontend/src/audio/VoiceConnection.ts` — Added `activeResponseId` tracking. On `response_start`: sets active ID. On `audio`/`guide_text`: drops if `responseId` doesn't match active. On interrupt (frontend or backend): clears `activeResponseId` so all in-flight audio is rejected.
+
 ### Fixed
 - **Function calls now produce voice responses** — When Gemini made a function call (e.g. `suggest_location`, `trigger_world_generation`), the function was executed but Gemini was never called again to generate the follow-up voice response. The guide would go silent after any tool use. Fixed by adding a function-call loop in `_process_gemini_response()`: after executing function calls and adding results to history, Gemini is called again (with `user_text=None`) to produce the natural language follow-up. Loop runs up to `MAX_FUNCTION_ROUNDS=3` to support chained calls.
   - `backend/routers/voice.py` — Wrapped Gemini streaming in a `for round_num in range(MAX_FUNCTION_ROUNDS + 1)` loop. Tracks `function_calls_this_round`; breaks on pure text response; continues with `input_text=None` after function calls.
   - `backend/services/gemini_guide.py` — Made `user_text` parameter optional (`str | None = None`). When `None`, skips appending a user message and calls Gemini with the existing history (which contains the function result from `add_function_result()`).
+
+- **Graceful TTS teardown on interrupt** — Per Gradium best practices, now sends `end_of_stream` to TTS before closing the WebSocket on interrupt/cancellation. Previously just closed abruptly. The `end_of_stream` signal helps Gradium free the session faster, reducing concurrency limit issues during rapid interrupt cycles.
+  - `backend/routers/voice.py` — `finally` block in `_process_gemini_response()` now calls `tts_stream.send_flush()` before `tts_stream.close()`
 
 ### Changed
 - **Cleaned up debug logging in gemini_guide.py** — Replaced verbose `print()` statements with structured `logger.info()` and `logger.debug()` calls. Key milestones logged at INFO level, history dumps at DEBUG level.

@@ -43,6 +43,9 @@ export class VoiceConnection {
   private playback = new AudioPlaybackService();
   private listeners = new Map<string, Listener[]>();
   private _status: ConnectionStatus = "disconnected";
+  /** Tracks the active backend response — audio from other responses is dropped. */
+  private activeResponseId: string | null = null;
+  private droppedAudioCount = 0;
 
   get status(): ConnectionStatus {
     return this._status;
@@ -87,6 +90,7 @@ export class VoiceConnection {
                 "[VC] MIC ACTIVITY detected while playback active → INTERRUPT",
               );
               this.playback.interrupt();
+              this.activeResponseId = null; // Reject stale audio still in-flight
               this.send({ type: "interrupt" });
             }
           },
@@ -201,12 +205,31 @@ export class VoiceConnection {
     msgCount++;
 
     switch (msg.type) {
+      case "response_start":
+        // New response starting — update active ID and clear any leftover playback
+        this.activeResponseId = msg.responseId as string;
+        this.droppedAudioCount = 0;
+        console.log(
+          `[BE→VC] #${msgCount} RESPONSE_START: ${this.activeResponseId}`,
+        );
+        break;
+
       case "transcript":
         console.log(`[BE→VC] #${msgCount} TRANSCRIPT: "${msg.text}"`);
         this.emit("transcript", msg.text as string);
         break;
 
       case "audio": {
+        // Drop audio from stale (cancelled) responses still in-flight
+        if (msg.responseId && msg.responseId !== this.activeResponseId) {
+          this.droppedAudioCount++;
+          if (this.droppedAudioCount <= 3) {
+            console.log(
+              `[BE→VC] #${msgCount} AUDIO DROPPED (stale ${msg.responseId} != active ${this.activeResponseId})`,
+            );
+          }
+          break;
+        }
         const dataStr = msg.data as string;
         const pcm = base64ToArrayBuffer(dataStr);
         if (msgCount <= 5 || msgCount % 50 === 0) {
@@ -218,10 +241,15 @@ export class VoiceConnection {
         break;
       }
 
-      case "guide_text":
+      case "guide_text": {
+        // Drop guide text from stale responses too
+        if (msg.responseId && msg.responseId !== this.activeResponseId) {
+          break;
+        }
         console.log(`[BE→VC] #${msgCount} GUIDE_TEXT: "${msg.text}"`);
         this.emit("guideText", msg.text as string);
         break;
+      }
 
       case "fact":
         console.log(
@@ -265,6 +293,7 @@ export class VoiceConnection {
           `[BE→VC] #${msgCount} INTERRUPT from backend — stopping playback`,
         );
         this.playback.interrupt();
+        this.activeResponseId = null; // Reject stale audio still in-flight
         break;
 
       default:
@@ -278,6 +307,7 @@ export class VoiceConnection {
     );
     this.capture.stop();
     this.playback.stop();
+    this.activeResponseId = null;
     this.ws = null;
   }
 }
