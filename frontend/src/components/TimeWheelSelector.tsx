@@ -1,5 +1,6 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
 import { useSelectionStore } from '../selectionStore';
+import EnterLocation from './EnterLocation';
 import './TimeWheelSelector.css';
 
 const MIN_YEAR = -3000;
@@ -144,6 +145,8 @@ export default function TimeWheelSelector() {
           </div>
         )}
       </div>
+
+      <EnterLocation />
     </div>
   );
 }
