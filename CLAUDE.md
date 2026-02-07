@@ -10,6 +10,41 @@ Before writing or modifying ANY code that touches Gradium or World Labs APIs, yo
 
 Verify: endpoint URLs, request/response schemas, auth headers, audio formats, message types. If anything in the code doesn't match the docs, fix it immediately.
 
+## Changelog Updates (MANDATORY)
+
+Every time you make ANY change to the codebase — no matter how small — you MUST update `docs/CHANGELOG.md` before considering the task complete. Use the format specified in the changelog template:
+
+```markdown
+## [Session X] - YYYY-MM-DD HH:MM
+
+### Added
+- **Feature/item name** — Justification for why this was added
+  - `path/to/file1.ts`
+  - `path/to/file2.py`
+
+### Changed
+- **What changed** — Why this change was made
+  - `path/to/modified/file.ts`
+
+### Fixed
+- **Bug description** — Root cause and how it was resolved
+  - `path/to/fixed/file.py`
+
+### Removed
+- **What was removed** — Why it was removed
+  - `path/to/deleted/file.ts`
+
+### Notes
+- Observations, decisions, blockers, or anything worth remembering
+```
+
+Rules:
+- Include EVERY file you created, modified, or deleted
+- Write a clear justification for each change
+- Use the correct section (Added/Changed/Fixed/Removed)
+- Increment the session number from the last entry
+- If no session entries exist yet, start with `[Session 1]`
+
 ## Project Docs
 
 All project context lives in `docs/`:

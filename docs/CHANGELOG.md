@@ -17,6 +17,14 @@ Each entry includes what changed, why it was changed, and which files were affec
 
 ---
 
+## [Session 1] - 2026-02-07
+
+### Changed
+- **CLAUDE.md — Added mandatory changelog update rule** — Ensures every code change is tracked with justification and affected file paths, using the template format from CHANGELOG.md
+  - `CLAUDE.md`
+
+---
+
 <!-- Template for new entries:
 
 ## [Session X] - YYYY-MM-DD HH:MM
