@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from config import FRONTEND_URL
-from routers import voice, worlds
+from routers import voice, worlds, loading_phrases
 
 app = FastAPI(title="QHacks 2026 — Historical Explorer API")
 
@@ -15,6 +15,7 @@ app.add_middleware(
 
 app.include_router(voice.router)
 app.include_router(worlds.router)
+app.include_router(loading_phrases.router)
 
 
 @app.get("/health")

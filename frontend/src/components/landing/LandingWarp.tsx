@@ -13,10 +13,11 @@
      • prefers-reduced-motion: skips collapse/warp, quick fade only
    ================================================================ */
 
-import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
+import { useRef, useState, useEffect, useCallback } from 'react';
 import Particles, { initParticlesEngine } from '@tsparticles/react';
 import { loadSlim } from '@tsparticles/slim';
-import type { Container, ISourceOptions } from '@tsparticles/engine';
+import type { Container } from '@tsparticles/engine';
+import { landingStarfieldOptions } from '../starfieldOptions';
 import './LandingWarp.css';
 
 /* ------------------------------------------------------------------ */
@@ -101,42 +102,7 @@ export default function LandingWarp({ onComplete, initialYear }: LandingWarpProp
   }, []);
 
   /* ----- Idle starfield options (memo'd, never rebuilt during anim) ----- */
-  const particleOptions: ISourceOptions = useMemo(
-    () => ({
-      fullScreen: false,
-      fpsLimit: 120,
-      detectRetina: true,
-      background: { color: { value: 'transparent' } },
-      /* Disable all tsParticles interactivity so it can't steal focus/events */
-      interactivity: {
-        events: {
-          onHover: { enable: false },
-          onClick: { enable: false },
-        },
-      },
-      particles: {
-        /* Mix of pure white + faint blue-tinted stars for depth */
-        color: { value: ['#ffffff', '#e8eaff', '#cdd4ff', '#ffffff', '#ffffff'] },
-        number: { value: 380, density: { enable: true } },
-        opacity: {
-          value: { min: 0.1, max: 0.9 },
-          animation: { enable: true, speed: 0.6, sync: false },
-        },
-        size: { value: { min: 0.3, max: 2.2 } },
-        move: {
-          enable: true,
-          speed: { min: 0.2, max: 0.6 },
-          direction: 'none' as const,
-          random: true,
-          straight: false,
-          outModes: { default: 'out' as const },
-        },
-        links: { enable: false },
-        shape: { type: 'circle' },
-      },
-    }),
-    []
-  );
+  const particleOptions = landingStarfieldOptions;
 
   /* ----- Particle container loaded callback ----- */
   const particlesLoaded = useCallback(async (container?: Container) => {

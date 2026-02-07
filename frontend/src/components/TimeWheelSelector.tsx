@@ -54,7 +54,11 @@ function getCenturyLabel(year: number): string {
   return `${Math.floor(b / 100) * 100}s BCE`;
 }
 
-export default function TimeWheelSelector() {
+interface TimeWheelSelectorProps {
+  onEnterPress?: () => void;
+}
+
+export default function TimeWheelSelector({ onEnterPress }: TimeWheelSelectorProps) {
   const selectedYear = useSelectionStore((s) => s.selectedYear);
   const selectedEra = useSelectionStore((s) => s.selectedEra);
   const setSelectedYear = useSelectionStore((s) => s.setSelectedYear);
@@ -146,7 +150,7 @@ export default function TimeWheelSelector() {
         )}
       </div>
 
-      <EnterLocation />
+      <EnterLocation onEnterPress={onEnterPress} />
     </div>
   );
 }
