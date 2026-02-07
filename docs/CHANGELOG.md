@@ -27,6 +27,20 @@ Each entry includes what changed, why it was changed, and which files were affec
 - **Sentence splitting under heavy barge-in** — When the user interrupted and spoke, their sentence was split into 2-3 separate turns (e.g. "No, no, you can tell me about Germany. Sorry, I interrupted you there before" became three turns). Root cause: after an interrupt, STT fragments arrive in bursts as the mic picks up both the tail of TTS audio and the user's actual speech. The standard 0.5s debounce was too short — fragments would pause just long enough to fire a premature turn. Fix: after a barge-in interrupt, use a longer debounce window (1.5s instead of 0.5s) for 3 seconds, giving the user time to finish their thought before a turn fires.
   - `backend/routers/voice.py` — Added `TURN_DEBOUNCE_AFTER_INTERRUPT_S = 1.5`, `INTERRUPT_DEBOUNCE_WINDOW_S = 3.0`, `last_interrupt_at` shared variable. Interrupt handler records timestamp. Debounced turn firing selects debounce duration based on time since last interrupt. Logs show which debounce mode was used.
 
+### Changed
+- **Archived frontend test UI and removed conflicting config for clean merge with EJ's frontend** — Since `frontend/` doesn't exist on `main`, both Matt's and EJ's branches add the entire directory. Any shared filenames (App.tsx, main.tsx, package.json, vite.config.ts, tsconfig.json, index.html) would conflict. Removed all files EJ will provide, archived Matt's test UI for reference, and kept only the unique voice pipeline files that won't conflict.
+  - `frontend/src/App.tsx` → `frontend/src/_archived/TestApp.tsx` (archived)
+  - `frontend/src/main.tsx` → `frontend/src/_archived/test-main.tsx` (archived)
+  - `frontend/index.html` — Deleted (EJ provides)
+  - `frontend/package.json` — Deleted (EJ provides)
+  - `frontend/vite.config.ts` — Deleted (EJ provides; WS proxy config documented in integration notes)
+  - `frontend/tsconfig.json` — Deleted (EJ provides)
+  - `frontend/src/vite-env.d.ts` — Deleted (EJ provides)
+
+### Added
+- **Post-merge voice integration guide** — Created `docs/VOICE_INTEGRATION.md` documenting everything EJ needs to wire up Matt's voice pipeline into his frontend: Vite WS proxy config, React hook usage, event listeners for world/fact/music/location, context/phase sending, AudioWorklet serving requirements, and TypeScript config notes.
+  - `docs/VOICE_INTEGRATION.md` — New file
+
 ---
 
 ## [Session 9] - 2026-02-07
