@@ -55,8 +55,10 @@ interface AppState {
   setRenderableWorldData: (id: string, assets: WorldRenderableAssets) => void;
 
   currentTrack: string | null;
+  exploreTrack: string | null;
   isMusicPlaying: boolean;
   setCurrentTrack: (t: string | null) => void;
+  setExploreTrack: (t: string | null) => void;
   setMusicPlaying: (v: boolean) => void;
 
   messages: Array<{ role: 'user' | 'guide'; text: string }>;
@@ -95,6 +97,10 @@ interface AppState {
   confirmExplorationRequested: boolean;
   requestConfirmExploration: () => void;
   clearConfirmExploration: () => void;
+
+  // Canvas frame capture (set by WorldExplorer, called by App for visual queries)
+  captureWorldFrame: (() => string | null) | null;
+  setCaptureWorldFrame: (fn: (() => string | null) | null) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -148,8 +154,10 @@ export const useAppStore = create<AppState>((set) => ({
     }),
 
   currentTrack: null,
+  exploreTrack: null,
   isMusicPlaying: false,
   setCurrentTrack: (currentTrack) => set({ currentTrack }),
+  setExploreTrack: (exploreTrack) => set({ exploreTrack }),
   setMusicPlaying: (isMusicPlaying) => set({ isMusicPlaying }),
 
   messages: [],
@@ -186,4 +194,7 @@ export const useAppStore = create<AppState>((set) => ({
   confirmExplorationRequested: false,
   requestConfirmExploration: () => set({ confirmExplorationRequested: true }),
   clearConfirmExploration: () => set({ confirmExplorationRequested: false }),
+
+  captureWorldFrame: null,
+  setCaptureWorldFrame: (fn) => set({ captureWorldFrame: fn }),
 }));

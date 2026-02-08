@@ -6,6 +6,154 @@ Each entry includes what changed, why it was changed, and which files were affec
 
 ---
 
+## [Session 22] - 2026-02-08
+
+### Fixed
+- **AI not speaking in exploring phase (facts only, no voice)** — Session 21's aggressive "ALWAYS call generate_fact" prompt caused Gemini to treat facts as the entire response, generating only function calls with no spoken text. The function call loop continued to round 2 but Gemini produced minimal/no text follow-up. Fix: reworded prompt to make spoken text explicitly the PRIMARY output ("you MUST generate spoken text in every response") with facts as supplementary ("alongside your spoken words, call generate_fact 1-2 times"). Added "CRITICAL: Never respond with only function calls and no spoken text."
+  - `backend/services/gemini_guide.py`
+
+---
+
+## [Session 21] - 2026-02-08
+
+### Fixed
+- **Subtitle flash (full text appearing before word-by-word streaming)** — Session 20's guideText fallback accumulated all text into `guideSubtitle` before TTS audio started. When word-by-word kicked in, it would reset to word 1 — visible as a 0.2s flash of full text. Removed the fallback; word-by-word via TTS timestamps is the only subtitle path again.
+  - `frontend/src/hooks/useVoiceConnection.ts`
+
+### Added
+- **UserSpeakingIndicator in exploring phase** — The voice-modulating pill that grows/shrinks with mic level was only rendered in globe phase (`showGlobeUI`). Added it to the exploring phase JSX so it appears during 3D world exploration too.
+  - `frontend/src/App.tsx`
+
+### Changed
+- **Expanded fact categories (5 → 15)** — Added science, architecture, food, nature, trade, religion, warfare, medicine, music, language to the `generate_fact` tool's category enum. Gives Gemini more variety for overlay fact cards.
+  - `backend/services/gemini_guide.py`
+
+- **Boosted fact generation frequency** — Changed EXPLORING_PROMPT from "aim for 1-2 facts when relevant" to "ALWAYS call generate_fact at least once per response — ideally 2-3 times." Facts are a core visual feature and should fire consistently during exploration.
+  - `backend/services/gemini_guide.py`
+
+---
+
+## [Session 20] - 2026-02-08
+
+### Changed
+- **Removed spacebar push-to-talk (mic always on)** — Spacebar feature was unreliable: trailing STT words after release killed AI responses, and mute state sync had repeated issues across Sessions 17-19. Reverted to always-on mic. Removed spacebar keydown/keyup listeners, set `_muted = false`, removed `setMuted` method and mute-state sync after `capture.start()`. Can revisit push-to-talk in the future.
+  - `frontend/src/audio/VoiceConnection.ts`
+  - `frontend/src/hooks/useVoiceConnection.ts`
+
+### Fixed
+- **Pillbox (GuideSubtitle) not appearing in exploring phase** — The word-by-word subtitle system (TTS timestamps + audioPlaybackStart) worked in globe phase but failed silently in exploring. Instead of continuing to debug the timestamp pipeline, added a direct fallback: the `guideText` handler now sets `guideSubtitle` directly from Gemini's streaming text chunks when `_subtitleAudioStart` is 0 (word-by-word hasn't started). This guarantees the pillbox shows as soon as text arrives. If/when TTS audio starts and word-by-word kicks in, it takes over seamlessly.
+  - `frontend/src/hooks/useVoiceConnection.ts`
+
+---
+
+## [Session 19] - 2026-02-08
+
+### Fixed
+- **Spacebar release killing AI response** — Root cause: the transcript handler in VoiceConnection.ts performed barge-in interrupt on ANY transcript while TTS was playing, with no regard for mic muted state. When the user released spacebar (muting mic), trailing STT words still buffered in Gradium's pipeline would arrive as transcript events. The handler saw `playback.isPlaying === true` → killed playback → sent interrupt to backend → response dead. It also called `emit("responseStart")` which cleared the subtitle state. Fix: gated both the `responseStart` emission and the barge-in interrupt on `!this._muted` — only interrupt if the mic is actively unmuted (spacebar held). Trailing transcripts after spacebar release are logged but ignored for barge-in.
+  - `frontend/src/audio/VoiceConnection.ts`
+
+- **Pillbox (GuideSubtitle) not appearing in exploring phase** — The component was already rendered in App.tsx (line 323) during exploring phase. The issue was the spacebar transcript interrupt (above) killing responses before word timestamps and audio could populate the subtitle state. With the mic always on (Session 17 bug) or trailing STT words interrupting (this fix), `audioPlaybackStart` never fired, so `_subtitleAudioStart` was never set, so the 50ms polling in GuideSubtitle never revealed any words. No code change needed — fixing the transcript barge-in resolves this.
+
+### Notes
+- The distinction: user holding spacebar + speaking while AI talks = valid barge-in (interrupt). User releasing spacebar while AI talks = trailing STT words, not new speech (ignore).
+- GuideSubtitle was always in the exploring phase JSX — the user thought it was missing code, but the real issue was state never being populated due to constant interrupts.
+
+---
+
+## [Session 18] - 2026-02-08
+
+### Fixed
+- **Spacebar push-to-talk not working (mic always on)** — Root cause: `capture.start()` creates a new `MediaStream` with `track.enabled = true` (browser default). The `_muted = true` state on VoiceConnection was never synced to this new stream, so the mic was always live despite push-to-talk being implemented. Fix: added `this.capture.setMuted(this._muted)` after `capture.start()` completes, ensuring every new connection starts muted. This also fixes the pillbox not appearing in exploring phase — with mic always on, ambient speech triggered constant barge-in interrupts via STT, cancelling TTS before `audioPlaybackStart` could fire, so subtitles never populated.
+  - `frontend/src/audio/VoiceConnection.ts`
+
+- **AI over-describing visuals in exploring phase** — Two conflicting instructions: the `EXPLORING_PROMPT` said "don't describe unless asked" but the seeded message in the `explore_start` handler said "describe what they can see." The seeded message overrode the system prompt, causing Gemini to physically describe colors, lighting, and textures on every response. Fix: (1) Changed seeded message from "describe what they can see" to "Welcome them warmly to this historical moment." (2) Rewrote EXPLORING_PROMPT instruction #3 to distinguish between RECOGNIZING (identifying landmarks/objects — desired) and DESCRIBING (colors, textures, visual composition — undesired).
+  - `backend/routers/voice.py`
+  - `backend/services/gemini_guide.py`
+
+### Notes
+- The spacebar fix is a one-liner but was the root cause of two user-facing bugs (mic always on + pillbox missing in exploring). The MediaStream `track.enabled` default is a subtle browser API gotcha.
+- Visual prompt fix: the seeded message in explore_start is the first thing Gemini "hears" in the exploring phase, so it had more influence than the system prompt instruction. Removing the conflicting directive resolves the over-description.
+
+---
+
+## [Session 17] - 2026-02-08
+
+### Added
+- **Push-to-talk with spacebar** — Hold spacebar to unmute mic, release to mute. Mic is muted by default so the team can talk over the AI during demos without triggering STT. Muting uses `MediaStreamTrack.enabled` so the AudioWorklet receives silence (not dropped chunks) — this keeps VAD working so turns fire correctly after user speech ends.
+  - `frontend/src/audio/AudioCaptureService.ts` (added `setMuted()` — toggles track.enabled)
+  - `frontend/src/audio/VoiceConnection.ts` (added `_muted` flag, `setMuted()` forwards to capture)
+  - `frontend/src/hooks/useVoiceConnection.ts` (spacebar keydown/keyup listeners)
+
+- **Music queue: loading track + explore track** — Backend now finds TWO songs from Deezer suggestions: first plays during loading, second plays when entering the 3D world. Crossfades between tracks on phase transition.
+  - `backend/routers/voice.py` (select_music finds two tracks, sends `exploreTrackUrl`)
+  - `frontend/src/audio/VoiceConnection.ts` (MusicMessage extended with explore fields)
+  - `frontend/src/hooks/useVoiceConnection.ts` (stores explore track URL on music event)
+  - `frontend/src/store.ts` (added `exploreTrack` field)
+  - `frontend/src/App.tsx` (crossfade to explore track on phase change)
+
+### Changed
+- **Exploring prompt: no unsolicited visual descriptions** — Updated EXPLORING_PROMPT so Gemini only describes what it sees in the canvas frame when the user explicitly asks about their view (e.g. "what's that building"). Previously, every response included visual descriptions because the prompt said "image attached = user asking about visuals."
+  - `backend/services/gemini_guide.py`
+
+### Fixed
+- **Pillbox (GuideSubtitle) not appearing in exploring view** — Race condition: when `disconnect()` closed the old WebSocket, the async `onclose` handler fired AFTER the new `connect()` created a fresh AudioContext, destroying it via `cleanup()`. This killed TTS playback, so `audioPlaybackStart` never fired, so `_subtitleAudioStart` was never set, so the subtitle polling never revealed words, so `guideSubtitle` stayed empty, so the pillbox returned null. Fix: null out `onclose`/`onerror`/`onmessage` handlers before calling `ws.close()` in `disconnect()`.
+  - `frontend/src/audio/VoiceConnection.ts`
+
+---
+
+## [Session 16] - 2026-02-08
+
+### Added
+- **Voice reconnection in exploring phase** — Voice pipeline now reconnects when entering the 3D world exploration phase, giving a fresh 300s Gradium session. Frontend sends `explore_start` with Phase 1 context (user profile, world description, location, time period) to seed Gemini with conversation continuity. AI auto-narrates a welcome when the world loads.
+  - `frontend/src/App.tsx`
+  - `frontend/src/audio/VoiceConnection.ts`
+  - `frontend/src/hooks/useVoiceConnection.ts`
+  - `backend/routers/voice.py`
+
+- **FactsPanel component** — Glassmorphic fact overlay cards on the left side of the screen during exploration. Facts slide in with animation, show color-coded category labels, auto-dismiss after 15 seconds, max 4 visible. Same backdrop-blur styling as GuideSubtitle.
+  - `frontend/src/components/FactsPanel.tsx` (NEW)
+  - `frontend/src/hooks/useVoiceConnection.ts` (wired `fact` event to store)
+
+- **"What am I looking at?" visual query** — Canvas frame capture system for Gemini vision. During exploring phase, every Gemini request includes a JPEG snapshot of the current 3D view. Backend sends `request_frame` to frontend, frontend captures canvas via `toDataURL`, sends back as base64, backend includes as `inline_data` image part in Gemini conversation. Works for any question, not just explicit visual queries.
+  - `frontend/src/components/WorldExplorer.tsx` (preserveDrawingBuffer + captureWorldFrame)
+  - `frontend/src/store.ts` (captureWorldFrame field)
+  - `frontend/src/audio/VoiceConnection.ts` (sendFrame, request_frame handler)
+  - `frontend/src/hooks/useVoiceConnection.ts` (requestFrame event wiring)
+  - `backend/routers/voice.py` (frame_event/frame_holder, request_frame flow)
+  - `backend/services/gemini_guide.py` (image_part parameter in generate_response)
+
+- **Exploring phase Gemini prompt** — Dedicated `EXPLORING_PROMPT` that includes user profile and world description from Phase 1. Instructs Gemini to act as a tour guide, share facts via `generate_fact`, and describe visual details from attached images.
+  - `backend/services/gemini_guide.py`
+
+### Changed
+- **GuideSubtitle now rendered during exploring** — Same word-by-word TTS-synced subtitle pill displayed during 3D exploration, not just globe phase.
+  - `frontend/src/App.tsx`
+
+### Fixed
+- **Visual query frame capture reliability** — Frame capture for Gemini vision was failing because the request/response pattern timed out (audio messages flood the WebSocket). Fix: frontend now proactively sends canvas frames whenever user speech is detected (on transcript events), so the backend always has a recent frame. Backend uses the stored frame as fallback if the explicit request times out.
+  - `frontend/src/hooks/useVoiceConnection.ts`
+  - `backend/routers/voice.py`
+
+---
+
+## [Session 15] - 2026-02-08
+
+### Fixed
+- **WorldExplorer "collapse to a point" artifact** — Localized pinch/collapse in the rendered Gaussian splat world caused by float16 quantization. SparkRenderer was added directly to the scene (`scene.add(spark)`), meaning its origin was at `(0,0,0)`. SparkJS uses float16 internally for splat positions relative to the SparkRenderer origin, so distant splats lost precision and collapsed. Fix: moved SparkRenderer to be a child of the camera (`camera.add(spark)`) per SparkJS docs, so precision is always highest near the viewpoint. Also enabled `sort360: true` to prevent behind-camera culling artifacts when orbiting 360° around the world.
+  - `frontend/src/components/WorldExplorer.tsx`
+- **Camera spawns facing away from artifact** — Flipped initial camera Z offset so the world loads with the camera on the opposite side, hiding the collapse artifact from the default view.
+  - `frontend/src/components/WorldExplorer.tsx`
+
+---
+
+## [Session 14] - 2026-02-08
+
+### Changed
+- **WorldExplorer renderer rewritten from scratch** — Complete rewrite to fix severe frame rate issues and "collapsed ball of light" artifact. Root causes: `gl.readPixels()` GPU sync in render loop, per-frame scene traversal to find auto-created SparkRenderer, ~200 lines of always-active debug instrumentation, retroactive SparkRenderer configuration, and full-resolution splat loaded by default. New implementation creates SparkRenderer explicitly at init with all config (eliminates per-frame traversal), removes all render-loop debug overhead, prefers 500k splat resolution for balanced quality/perf, and drops unnecessary collider mesh loading. Reduced from 520 lines to 263 lines.
+  - `frontend/src/components/WorldExplorer.tsx`
+
+---
+
 ## [Session 13] - 2026-02-08
 
 ### Fixed

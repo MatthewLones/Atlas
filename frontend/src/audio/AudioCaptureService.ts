@@ -66,6 +66,16 @@ export class AudioCaptureService {
     this.workletNode.connect(this.audioContext.destination);
   }
 
+  /** Mute/unmute mic at the track level. Muted track produces silence frames
+   *  so the AudioWorklet keeps running and STT VAD still receives audio. */
+  setMuted(muted: boolean): void {
+    if (this.stream) {
+      for (const track of this.stream.getAudioTracks()) {
+        track.enabled = !muted;
+      }
+    }
+  }
+
   stop(): void {
     if (this.workletNode) {
       this.workletNode.port.postMessage({ command: "stop" });

@@ -11,6 +11,7 @@ import WorldExplorer from './components/WorldExplorer';
 import HyperspaceCanvas, { DEFAULT_IDLE_VELOCITY } from './components/HyperspaceCanvas';
 import type { HyperspaceHandle } from './components/HyperspaceCanvas';
 import GuideSubtitle from './components/GuideSubtitle';
+import FactsPanel from './components/FactsPanel';
 import UserSpeakingIndicator from './components/UserSpeakingIndicator';
 import LandingWarp from './components/landing/LandingWarp';
 import { useAppStore } from './store';
@@ -30,6 +31,7 @@ function App() {
   const confirmRequested = useAppStore((s) => s.confirmExplorationRequested);
   const clearConfirm = useAppStore((s) => s.clearConfirmExploration);
   const worldDescription = useAppStore((s) => s.worldDescription);
+  const exploreTrack = useAppStore((s) => s.exploreTrack);
   const setWorldStatus = useAppStore((s) => s.setWorldStatus);
   const setRenderableWorldData = useAppStore((s) => s.setRenderableWorldData);
   const setSelectedYear = useSelectionStore((s) => s.setSelectedYear);
@@ -51,6 +53,8 @@ function App() {
   const voiceStartedRef = useRef(false);
   const sessionStartSentRef = useRef(false);
   const loadingGenerationStartedRef = useRef(false);
+  const exploringVoiceStartedRef = useRef(false);
+  const exploreStartSentRef = useRef(false);
 
   /* When the landing warp finishes:
      1. Set the chosen year in the selection store (updates era + meta)
@@ -143,12 +147,19 @@ function App() {
     }
   }, [phase]);
 
-  // Stop music when leaving globe/loading phases
+  // Music transitions between phases
   useEffect(() => {
-    if (phase !== 'globe' && phase !== 'loading') {
+    if (phase === 'exploring' && exploreTrack) {
+      // Crossfade from loading track to explore track
+      musicService.stop(1500);
+      const timer = setTimeout(() => {
+        musicService.play(exploreTrack, { loop: true, fadeInMs: 2000 });
+      }, 1500);
+      return () => clearTimeout(timer);
+    } else if (phase !== 'globe' && phase !== 'loading' && phase !== 'exploring') {
       musicService.stop(2000);
     }
-  }, [phase]);
+  }, [phase, exploreTrack]);
 
   // When backend signals transition is complete (goodbye TTS + all tool calls
   // done), disconnect voice so STT stops immediately. Phase change to 'loading'
@@ -162,6 +173,38 @@ function App() {
       return () => clearTimeout(timer);
     }
   }, [transitionComplete, voice.disconnect]);
+
+  // Reconnect voice when entering exploring phase (fresh 300s Gradium session)
+  useEffect(() => {
+    if (phase === 'exploring' && !exploringVoiceStartedRef.current) {
+      exploringVoiceStartedRef.current = true;
+      exploreStartSentRef.current = false;
+      voice.connect();
+    }
+  }, [phase, voice.connect]);
+
+  // After voice connects in exploring phase, send explore_start with Phase 1 context
+  useEffect(() => {
+    if (
+      voice.status === 'connected' &&
+      phase === 'exploring' &&
+      !exploreStartSentRef.current
+    ) {
+      exploreStartSentRef.current = true;
+      const timer = setTimeout(() => {
+        voice.sendExploreStart({
+          userProfile,
+          worldDescription,
+          location,
+          timePeriod: {
+            label: selectedEra,
+            year: selectedYear,
+          },
+        });
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [voice.status, phase, userProfile, worldDescription, location, selectedEra, selectedYear, voice.sendExploreStart]);
 
   // Trigger World Labs generation once loading phase begins and we have a
   // world_description from Gemini's summarize_session tool call.
@@ -275,7 +318,12 @@ function App() {
       )}
 
       {phase === 'exploring' && (
-        <WorldExplorer />
+        <>
+          <WorldExplorer />
+          <GuideSubtitle />
+          <FactsPanel />
+          <UserSpeakingIndicator />
+        </>
       )}
     </div>
   );

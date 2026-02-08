@@ -37,6 +37,7 @@ export type VoiceEventMap = {
   responseStart: () => void;
   status: (status: ConnectionStatus) => void;
   micLevel: (rms: number) => void;
+  requestFrame: () => void;
 };
 
 export interface MusicMessage {
@@ -44,6 +45,9 @@ export interface MusicMessage {
   trackUrl?: string;
   trackName?: string;
   artist?: string;
+  exploreTrackUrl?: string;
+  exploreTrackName?: string;
+  exploreArtist?: string;
 }
 
 type Listener = (...args: never[]) => void;
@@ -62,6 +66,8 @@ export class VoiceConnection {
   private droppedAudioCount = 0;
   /** True until first audio chunk plays for current response (for subtitle sync). */
   private firstAudioForResponse = true;
+  /** Mic mute state (currently always on — spacebar PTT removed). */
+  private _muted = false;
 
   get status(): ConnectionStatus {
     return this._status;
@@ -148,6 +154,12 @@ export class VoiceConnection {
   disconnect(): void {
     console.log("[VC] disconnect() called");
     if (this.ws) {
+      // Null out handlers BEFORE closing to prevent the stale onclose from
+      // destroying a new connection's AudioContext if connect() is called
+      // immediately after disconnect() (e.g. globe → exploring phase transition).
+      this.ws.onclose = null;
+      this.ws.onerror = null;
+      this.ws.onmessage = null;
       this.ws.close();
       this.ws = null;
     }
@@ -176,6 +188,20 @@ export class VoiceConnection {
   sendConfirmExploration(): void {
     console.log("[VC→BE] sendConfirmExploration");
     this.send({ type: "confirm_exploration" });
+  }
+
+  sendExploreStart(data: {
+    userProfile: string | null;
+    worldDescription: string | null;
+    location: { lat: number; lng: number; name: string } | null;
+    timePeriod: { label: string; year: number };
+  }): void {
+    console.log("[VC→BE] sendExploreStart:", data);
+    this.send({ type: "explore_start", ...data });
+  }
+
+  sendFrame(base64Jpeg: string): void {
+    this.send({ type: "frame", image: base64Jpeg });
   }
 
   on<K extends keyof VoiceEventMap>(
@@ -242,7 +268,7 @@ export class VoiceConnection {
 
       case "transcript": {
         console.log(`[BE→VC] #${msgCount} TRANSCRIPT: "${msg.text}"`);
-        // Always clear stale subtitles when user speaks
+        // Clear stale subtitles when user speaks
         this.emit("responseStart");
         // Speech-based barge-in: interrupt playback if still active
         if (this.playback.isPlaying) {
@@ -321,6 +347,9 @@ export class VoiceConnection {
           trackUrl: msg.trackUrl as string | undefined,
           trackName: msg.trackName as string | undefined,
           artist: msg.artist as string | undefined,
+          exploreTrackUrl: msg.exploreTrackUrl as string | undefined,
+          exploreTrackName: msg.exploreTrackName as string | undefined,
+          exploreArtist: msg.exploreArtist as string | undefined,
         });
         break;
       }
@@ -371,6 +400,11 @@ export class VoiceConnection {
         );
         break;
       }
+
+      case "request_frame":
+        console.log(`[BE→VC] #${msgCount} REQUEST_FRAME`);
+        this.emit("requestFrame");
+        break;
 
       case "interrupt":
         console.log(

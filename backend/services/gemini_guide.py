@@ -78,7 +78,7 @@ vivid description of the scene they are about to enter.
 """ + TTS_RULES
 
 # ---------------------------------------------------------------------------
-# Phase 2+ — Exploration: full guide with facts, world gen, music
+# Phase 2+ — Loading: narrate while world generates
 # ---------------------------------------------------------------------------
 GUIDE_SYSTEM_PROMPT = """\
 You are a warm, knowledgeable historical guide helping users explore any place \
@@ -95,6 +95,48 @@ stories. Paint a picture with words. Keep talking until the world is ready. \
 Call select_music to queue era-appropriate music.
 - exploring: Be a tour guide. Point out features. Answer questions. Share \
 facts via generate_fact. Keep responses to 2-3 sentences.
+
+Personality: Enthusiastic but not over-the-top. Scholarly but accessible. \
+Think David Attenborough meets a history professor who loves their subject.
+
+""" + TTS_RULES
+
+# ---------------------------------------------------------------------------
+# Phase 3 — Exploring: tour guide with facts and visual context
+# ---------------------------------------------------------------------------
+EXPLORING_PROMPT = """\
+You are a warm, knowledgeable tour guide helping a traveller explore a \
+photorealistic 3D world of a historical place and time period. You speak \
+conversationally — vivid but concise.
+
+About the traveller:
+{user_profile}
+
+The world they are exploring:
+{world_description}
+
+Current context:
+- Location: {location_name} ({lat}, {lng})
+- Time Period: {time_period} ({year})
+
+Your role:
+1. Welcome the traveller warmly to the world. Reference something personal \
+you know about them. Keep it to 2-3 sentences.
+2. Your spoken response is ALWAYS the primary output — you MUST generate \
+spoken text in every response. Alongside your spoken words, call generate_fact \
+1-2 times per response to display supplementary fact cards on screen. Vary \
+categories: culture, technology, politics, daily_life, art, science, \
+architecture, food, nature, trade, religion, warfare, medicine, music, language. \
+CRITICAL: Never respond with only function calls and no spoken text.
+3. An image of what the user currently sees is always attached for your \
+reference. Use it to RECOGNIZE and IDENTIFY landmarks, buildings, objects, \
+and features (e.g. "that's the Empire State Building", "those are mangoes \
+in the market"). Never physically describe what you see — no descriptions \
+of colors, lighting, textures, or visual composition. Only mention \
+recognized objects when relevant to conversation or when the user asks.
+4. Answer questions conversationally. Be a brilliant companion, not a lecturer.
+5. Keep responses to 2-3 sentences. Do not over-explain.
+6. Proactively point out interesting details and tell stories about the place.
 
 Personality: Enthusiastic but not over-the-top. Scholarly but accessible. \
 Think David Attenborough meets a history professor who loves their subject.
@@ -276,7 +318,7 @@ def _build_exploration_tools() -> list[types.FunctionDeclaration]:
                     "category": types.Schema(
                         type="STRING",
                         description="Category of the fact",
-                        enum=["culture", "technology", "politics", "daily_life", "art"],
+                        enum=["culture", "technology", "politics", "daily_life", "art", "science", "architecture", "food", "nature", "trade", "religion", "warfare", "medicine", "music", "language"],
                     ),
                 },
                 required=["fact_text", "category"],
@@ -299,6 +341,8 @@ class GeminiGuide:
             "time_period": "Not selected",
             "year": "",
             "phase": "globe_selection",
+            "user_profile": "",
+            "world_description": "",
         }
 
     def update_context(self, **kwargs) -> None:
@@ -314,6 +358,9 @@ class GeminiGuide:
         elif phase == "globe_selection":
             prompt = PHASE1_GLOBE_PROMPT.format(**self.context)
             tools = _build_phase1_tools()
+        elif phase == "exploring":
+            prompt = EXPLORING_PROMPT.format(**self.context)
+            tools = _build_exploration_tools()
         else:
             prompt = GUIDE_SYSTEM_PROMPT.format(**self.context)
             tools = _build_exploration_tools()
@@ -333,7 +380,7 @@ class GeminiGuide:
         )
 
     async def generate_response(
-        self, user_text: str | None = None
+        self, user_text: str | None = None, image_part: types.Part | None = None
     ) -> AsyncGenerator[dict, None]:
         """Stream a response from Gemini. Yields dicts:
           {"type": "text", "text": "..."}
@@ -341,11 +388,23 @@ class GeminiGuide:
 
         If user_text is None, continues from the current history
         (used after function call results are added).
+        If image_part is provided, it is included alongside the user text
+        for visual context (exploring phase canvas frame).
         """
         if user_text is not None:
             logger.info("generate_response: user_text=%r", user_text[:80] if len(user_text) > 80 else user_text)
+            parts = [types.Part(text=user_text)]
+            if image_part:
+                parts.append(image_part)
+                logger.info("generate_response: including image part for visual context")
             self.conversation_history.append(
-                types.Content(role="user", parts=[types.Part(text=user_text)])
+                types.Content(role="user", parts=parts)
+            )
+        elif image_part:
+            # Image-only continuation (e.g. auto-narrate with visual context)
+            logger.info("generate_response: continuation with image part")
+            self.conversation_history.append(
+                types.Content(role="user", parts=[image_part])
             )
         else:
             logger.info("generate_response: continuation (no new user message)")

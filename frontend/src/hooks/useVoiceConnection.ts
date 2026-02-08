@@ -28,6 +28,13 @@ export interface VoiceState {
     timePeriod: { label: string; year: number },
   ) => void;
   sendPhase: (phase: string) => void;
+  sendExploreStart: (data: {
+    userProfile: string | null;
+    worldDescription: string | null;
+    location: { lat: number; lng: number; name: string } | null;
+    timePeriod: { label: string; year: number };
+  }) => void;
+  sendFrame: (base64Jpeg: string) => void;
 }
 
 export function useVoiceConnection(): VoiceState {
@@ -43,9 +50,18 @@ export function useVoiceConnection(): VoiceState {
 
     // --- Core state listeners ---
     vc.on("status", (s: ConnectionStatus) => setStatus(s));
-    vc.on("transcript", (text: string) =>
-      setTranscripts((prev) => [...prev, text]),
-    );
+    vc.on("transcript", (text: string) => {
+      setTranscripts((prev) => [...prev, text]);
+      // Proactively send canvas frame on speech during exploring —
+      // ensures backend has a recent frame by the time the turn fires.
+      if (useAppStore.getState().phase === "exploring") {
+        const captureFn = useAppStore.getState().captureWorldFrame;
+        if (captureFn) {
+          const frame = captureFn();
+          if (frame) vc.sendFrame(frame);
+        }
+      }
+    });
     vc.on("guideText", (text: string) => {
       setGuideTexts((prev) => [...prev, text]);
     });
@@ -92,6 +108,22 @@ export function useVoiceConnection(): VoiceState {
       useAppStore.getState().setLoadingMessages(messages);
     });
 
+    // Historical facts from Gemini generate_fact tool
+    vc.on("fact", (text: string, category: string) => {
+      useAppStore.getState().addFact({ text, category });
+    });
+
+    // Backend requests a canvas frame for Gemini visual context
+    vc.on("requestFrame", () => {
+      const captureFn = useAppStore.getState().captureWorldFrame;
+      if (captureFn) {
+        const frame = captureFn();
+        if (frame) {
+          vc.sendFrame(frame);
+        }
+      }
+    });
+
     // Backend signals all confirm_exploration tool calls are done
     vc.on("transitionComplete", () => {
       useAppStore.getState().setTransitionComplete(true);
@@ -101,6 +133,11 @@ export function useVoiceConnection(): VoiceState {
     // so just fade in the new track from silence. Wait for any TTS audio to
     // finish draining first so music doesn't cut off the AI mid-sentence.
     vc.on("music", (msg: MusicMessage) => {
+      // Store explore track for later (plays when entering exploring phase)
+      if (msg.exploreTrackUrl) {
+        useAppStore.getState().setExploreTrack(msg.exploreTrackUrl);
+        console.log(`[MUSIC] Queued explore track: ${msg.exploreTrackName ?? msg.exploreTrackUrl} by ${msg.exploreArtist ?? "unknown"}`);
+      }
       if (msg.trackUrl) {
         const url = msg.trackUrl;
         const startMusic = () => {
@@ -162,6 +199,22 @@ export function useVoiceConnection(): VoiceState {
     vcRef.current?.sendPhase(phase);
   }, []);
 
+  const sendExploreStart = useCallback(
+    (data: {
+      userProfile: string | null;
+      worldDescription: string | null;
+      location: { lat: number; lng: number; name: string } | null;
+      timePeriod: { label: string; year: number };
+    }) => {
+      vcRef.current?.sendExploreStart(data);
+    },
+    [],
+  );
+
+  const sendFrame = useCallback((base64Jpeg: string) => {
+    vcRef.current?.sendFrame(base64Jpeg);
+  }, []);
+
   return {
     status,
     transcripts,
@@ -172,5 +225,7 @@ export function useVoiceConnection(): VoiceState {
     sendConfirmExploration,
     sendContext,
     sendPhase,
+    sendExploreStart,
+    sendFrame,
   };
 }

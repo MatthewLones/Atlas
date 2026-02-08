@@ -116,34 +116,48 @@ async def _handle_function_call(
             gemini.add_function_result(name, {"status": "error", "error": str(e)})
 
     elif name == "select_music":
-        # Try Deezer first (no auth needed), fall back to downloaded tracks
+        # Try Deezer first (no auth needed), fall back to downloaded tracks.
+        # Find TWO songs: first for loading phase, second for exploring phase.
         song_suggestions = args.get("song_suggestions", [])
         print(f"[{_ts()}][FUNC] select_music: era={args.get('era')} region={args.get('region')} mood={args.get('mood')} songs={song_suggestions}")
-        deezer_track = None
+        loading_track = None
+        explore_track = None
         if song_suggestions:
             try:
                 for song in song_suggestions:
                     results = await deezer.search_tracks(song, limit=3)
                     if results:
-                        deezer_track = results[0]
-                        print(f"[{_ts()}][FUNC] Deezer: found '{deezer_track['title']}' for query '{song}'")
-                        break
-                    print(f"[{_ts()}][FUNC] Deezer: 0 results for '{song}', trying next...")
-                if not deezer_track:
+                        if loading_track is None:
+                            loading_track = results[0]
+                            print(f"[{_ts()}][FUNC] Deezer loading track: '{loading_track['title']}' for query '{song}'")
+                        elif explore_track is None:
+                            explore_track = results[0]
+                            print(f"[{_ts()}][FUNC] Deezer explore track: '{explore_track['title']}' for query '{song}'")
+                            break  # Found both
+                    else:
+                        print(f"[{_ts()}][FUNC] Deezer: 0 results for '{song}', trying next...")
+                if not loading_track:
                     print(f"[{_ts()}][FUNC] Deezer: 0 results for all {len(song_suggestions)} song suggestions")
             except Exception as e:
                 print(f"[{_ts()}][FUNC] Deezer search failed: {e} — falling back to local")
 
-        if deezer_track:
-            print(f"[{_ts()}][FUNC] Playing Deezer: \"{deezer_track['title']}\" by {deezer_track['artist']}")
-            await _send_json(ws, {
+        if loading_track:
+            music_msg = {
                 "type": "music",
                 "source": "deezer",
-                "trackUrl": deezer_track["preview_url"],
-                "trackName": deezer_track["title"],
-                "artist": deezer_track["artist"],
-            }, closed)
-            gemini.add_function_result(name, {"status": "playing_deezer", "track": deezer_track["title"]})
+                "trackUrl": loading_track["preview_url"],
+                "trackName": loading_track["title"],
+                "artist": loading_track["artist"],
+            }
+            if explore_track:
+                music_msg["exploreTrackUrl"] = explore_track["preview_url"]
+                music_msg["exploreTrackName"] = explore_track["title"]
+                music_msg["exploreArtist"] = explore_track["artist"]
+                print(f"[{_ts()}][FUNC] Music queue: loading=\"{loading_track['title']}\", explore=\"{explore_track['title']}\"")
+            else:
+                print(f"[{_ts()}][FUNC] Music queue: loading=\"{loading_track['title']}\" (no second track found)")
+            await _send_json(ws, music_msg, closed)
+            gemini.add_function_result(name, {"status": "playing_deezer", "track": loading_track["title"]})
         else:
             # Fallback to downloaded tracks
             track = select_track(era=args["era"], region=args["region"], mood=args["mood"])
@@ -226,6 +240,8 @@ async def _process_gemini_response(
     world_labs: WorldLabsService,
     closed: asyncio.Event,
     deezer: DeezerService | None = None,
+    frame_event: asyncio.Event | None = None,
+    frame_holder: dict | None = None,
 ) -> None:
     """Send user text to Gemini, stream response text to TTS and frontend.
 
@@ -297,6 +313,37 @@ async def _process_gemini_response(
 
             tts_recv_task = asyncio.create_task(forward_tts_audio())
 
+        # In exploring phase, get a canvas frame for Gemini visual context.
+        # Frontend proactively sends frames on speech (transcript events), so
+        # frame_holder usually already has a recent frame. Also send request_frame
+        # as a backup and wait briefly for a fresh capture.
+        frame_image_part = None
+        if gemini.context.get("phase") == "exploring" and frame_holder is not None:
+            # Request a fresh frame (non-blocking backup)
+            if frame_event:
+                frame_event.clear()
+                await _send_json(ws, {"type": "request_frame"}, closed)
+                try:
+                    await asyncio.wait_for(frame_event.wait(), timeout=1.5)
+                except asyncio.TimeoutError:
+                    print(f"[{_ts()}][FRAME] Request timed out — using stored frame if available")
+
+            # Use whatever frame we have (proactive or from request)
+            frame_b64 = frame_holder.get("image")
+            if frame_b64:
+                try:
+                    frame_image_part = types.Part(
+                        inline_data=types.Blob(
+                            mime_type="image/jpeg",
+                            data=base64.b64decode(frame_b64),
+                        )
+                    )
+                    print(f"[{_ts()}][FRAME] Using canvas frame ({len(frame_b64)} chars b64)")
+                except Exception as e:
+                    print(f"[{_ts()}][FRAME] Failed to decode frame: {e}")
+            else:
+                print(f"[{_ts()}][FRAME] No frame available")
+
         # Stream Gemini response — text always goes to frontend, TTS if available.
         # Loop handles function calling: after executing function calls and adding
         # results to history, call Gemini again to get the follow-up voice response.
@@ -308,7 +355,7 @@ async def _process_gemini_response(
         for round_num in range(MAX_FUNCTION_ROUNDS + 1):
             function_calls_this_round = []
 
-            async for chunk in gemini.generate_response(input_text):
+            async for chunk in gemini.generate_response(input_text, image_part=frame_image_part):
                 if chunk["type"] == "text":
                     text_piece = chunk["text"]
                     full_response_text += text_piece
@@ -340,6 +387,7 @@ async def _process_gemini_response(
             # Function calls were made — call Gemini again for follow-up voice response
             print(f"[{_ts()}][GEMINI] Round {round_num + 1}: {len(function_calls_this_round)} function call(s), continuing for follow-up...")
             input_text = None  # No new user message — continue from function result
+            frame_image_part = None  # Only attach frame on first round
 
         print(f"[{_ts()}][GEMINI] Response complete. {gemini_chunk_count} text chunks, {len(full_response_text)} chars")
 
@@ -406,6 +454,10 @@ async def voice_ws(websocket: WebSocket):
     ws_closed = asyncio.Event()  # Prevents sending on a closed WebSocket
     turn_count = 0
     last_interrupt_at = 0.0  # Shared: set by interrupt handler, read by STT task
+
+    # Frame capture for Gemini visual context (exploring phase)
+    frame_event = asyncio.Event()
+    frame_holder: dict = {}  # {"image": "<base64_jpeg>"}
 
     try:
         print(f"[{_ts()}][VOICE] Creating STT stream...")
@@ -527,7 +579,8 @@ async def voice_ws(websocket: WebSocket):
                     print(f"[{_ts()}][VOICE] Launching Gemini response task for turn #{turn_count}")
                     current_response = asyncio.create_task(
                         _process_gemini_response(
-                            user_text, websocket, gemini, gradium, world_labs, ws_closed, deezer
+                            user_text, websocket, gemini, gradium, world_labs, ws_closed, deezer,
+                            frame_event=frame_event, frame_holder=frame_holder,
                         )
                     )
 
@@ -640,6 +693,47 @@ async def voice_ws(websocket: WebSocket):
                         None, websocket, gemini, gradium, world_labs, ws_closed, deezer
                     )
                 )
+
+            elif msg_type == "explore_start":
+                # Exploring phase: reconnected voice with Phase 1 context
+                user_profile = msg.get("userProfile", "")
+                world_desc = msg.get("worldDescription", "")
+                loc = msg.get("location") or {}
+                tp = msg.get("timePeriod") or {}
+                print(f"[{_ts()}][FE→BE] Explore start: location={loc.get('name')}, era={tp.get('label')}")
+
+                # Reset Gemini for fresh exploring session with Phase 1 context
+                gemini.reset()
+                gemini.update_context(
+                    phase="exploring",
+                    location_name=loc.get("name", ""),
+                    lat=loc.get("lat", ""),
+                    lng=loc.get("lng", ""),
+                    time_period=tp.get("label", ""),
+                    year=tp.get("year", ""),
+                    user_profile=user_profile or "No profile available",
+                    world_description=world_desc or "No description available",
+                )
+                # Seed with context about the user and world
+                gemini.conversation_history.append(
+                    types.Content(role="user", parts=[types.Part(text=(
+                        f"[System: The traveller has arrived in the 3D world. "
+                        f"Welcome them warmly to this historical moment. "
+                        f"Share 1-2 interesting facts about this place using the generate_fact tool. "
+                        f"Keep your spoken response to 2-3 vivid sentences.]"
+                    ))])
+                )
+                current_response = asyncio.create_task(
+                    _process_gemini_response(
+                        None, websocket, gemini, gradium, world_labs, ws_closed, deezer,
+                        frame_event=frame_event, frame_holder=frame_holder,
+                    )
+                )
+
+            elif msg_type == "frame":
+                # Canvas frame from frontend for Gemini visual context
+                frame_holder["image"] = msg.get("image", "")
+                frame_event.set()
 
             else:
                 print(f"[{_ts()}][FE→BE] Unknown message type: {msg_type}")
